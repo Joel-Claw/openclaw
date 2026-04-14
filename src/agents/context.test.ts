@@ -198,7 +198,7 @@ describe("resolveContextTokensForModel", () => {
     expect(result).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
   });
 
-  it("does not force 1M context when context1m is not enabled", () => {
+  it("returns 1M context for opus/sonnet-4 even without context1m flag", () => {
     const result = resolveContextTokensForModel({
       cfg: {
         models: {
@@ -225,7 +225,7 @@ describe("resolveContextTokensForModel", () => {
       allowAsyncLoad: false,
     });
 
-    expect(result).toBe(200_000);
+    expect(result).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
   });
 
   it("does not force 1M context for non-opus/sonnet Anthropic models", () => {
