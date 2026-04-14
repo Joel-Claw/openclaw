@@ -1685,7 +1685,15 @@ async function processMessageAfterDedupe(
           // of committing. Without this, a transient BlueBubbles send failure
           // would permanently block replay-retry for 7 days and the user
           // would never receive a reply to that message.
-          dedupeSignal.deliveryFailed = true;
+          //
+          // Only the terminal `final` delivery represents the user-visible
+          // answer. The dispatcher continues past `tool` / `block` failures
+          // and may still deliver `final` successfully — releasing the
+          // dedupe claim for those would invite a replay that re-runs tool
+          // side effects and resends partially-delivered content.
+          if (info.kind === "final") {
+            dedupeSignal.deliveryFailed = true;
+          }
           runtime.error?.(`BlueBubbles ${info.kind} reply failed: ${String(err)}`);
         },
       },
