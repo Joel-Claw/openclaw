@@ -1,7 +1,7 @@
 import type { ImageGenerationProvider } from "openclaw/plugin-sdk/image-generation";
 import { isProviderApiKeyConfigured } from "openclaw/plugin-sdk/provider-auth";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
-import { assertOkOrThrowHttpError, postJsonRequest } from "openclaw/plugin-sdk/provider-http";
+import { assertOkOrThrowHttpError, postJsonRequest, type ProviderRequestTransportOverrides } from "openclaw/plugin-sdk/provider-http";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 import { normalizeGoogleModelId, resolveGoogleGenerativeAiHttpRequestConfig } from "./api.js";
 
@@ -132,8 +132,7 @@ export function buildGoogleImageGenerationProvider(): ImageGenerationProvider {
         resolveGoogleGenerativeAiHttpRequestConfig({
           apiKey: auth.apiKey,
           baseUrl: req.cfg?.models?.providers?.google?.baseUrl,
-          request: req.cfg?.models?.providers?.google
-            ?.request as import("openclaw/plugin-sdk/provider-http").ProviderRequestTransportOverrides,
+          request: req.cfg?.models?.providers?.google?.request as ProviderRequestTransportOverrides,
           allowPrivateNetwork: req.cfg?.models?.providers?.google?.request?.allowPrivateNetwork,
           capability: "image",
           transport: "http",
