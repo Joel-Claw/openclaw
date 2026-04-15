@@ -132,6 +132,9 @@ export function buildGoogleImageGenerationProvider(): ImageGenerationProvider {
         resolveGoogleGenerativeAiHttpRequestConfig({
           apiKey: auth.apiKey,
           baseUrl: req.cfg?.models?.providers?.google?.baseUrl,
+          request: req.cfg?.models?.providers?.google
+            ?.request as import("openclaw/plugin-sdk/provider-http").ProviderRequestTransportOverrides,
+          allowPrivateNetwork: req.cfg?.models?.providers?.google?.request?.allowPrivateNetwork,
           capability: "image",
           transport: "http",
         });
