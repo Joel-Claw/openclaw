@@ -394,19 +394,66 @@ export const agentHandlers: GatewayRequestHandlers = {
     const requestedBestEffortDeliver =
       typeof request.bestEffortDeliver === "boolean" ? request.bestEffortDeliver : undefined;
 
+    // Validate agentId and sessionKey early so that paid image-description
+    // model calls are never triggered for invalid request params.
+    const validatedAgentIdRaw = normalizeOptionalString(request.agentId) ?? "";
+    const validatedAgentId = validatedAgentIdRaw ? normalizeAgentId(validatedAgentIdRaw) : undefined;
+    if (validatedAgentId) {
+      const knownAgents = listAgentIds(cfg);
+      if (!knownAgents.includes(validatedAgentId)) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent params: unknown agent id "${request.agentId}"`,
+          ),
+        );
+        return;
+      }
+    }
+    const validatedSessionKeyRaw =
+      typeof request.sessionKey === "string" && request.sessionKey.trim()
+        ? request.sessionKey.trim()
+        : undefined;
+    if (
+      validatedSessionKeyRaw &&
+      classifySessionKeyShape(validatedSessionKeyRaw) === "malformed_agent"
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid agent params: malformed session key "${validatedSessionKeyRaw}"`,
+        ),
+      );
+      return;
+    }
+    if (validatedAgentId && validatedSessionKeyRaw) {
+      const sessionAgentId = resolveAgentIdFromSessionKey(validatedSessionKeyRaw);
+      if (sessionAgentId !== validatedAgentId) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent params: session key agent (${sessionAgentId}) does not match agentId (${validatedAgentId})`,
+          ),
+        );
+        return;
+      }
+    }
+
     let message = (request.message ?? "").trim();
     let images: Array<{ type: "image"; data: string; mimeType: string }> = [];
     let imageOrder: PromptImageOrderEntry[] = [];
     if (normalizedAttachments.length > 0) {
-      const requestedSessionKeyRaw =
-        typeof request.sessionKey === "string" && request.sessionKey.trim()
-          ? request.sessionKey.trim()
-          : undefined;
 
       let baseProvider: string | undefined;
       let baseModel: string | undefined;
-      if (requestedSessionKeyRaw) {
-        const { cfg: sessCfg, entry: sessEntry } = loadSessionEntry(requestedSessionKeyRaw);
+      if (validatedSessionKeyRaw) {
+        const { cfg: sessCfg, entry: sessEntry } = loadSessionEntry(validatedSessionKeyRaw);
         const modelRef = resolveSessionModelRef(sessCfg, sessEntry, undefined);
         baseProvider = modelRef.provider;
         baseModel = modelRef.model;
@@ -427,29 +474,16 @@ export const agentHandlers: GatewayRequestHandlers = {
         });
         // When the primary model is text-only, describe offloaded images using
         // the configured imageModel so the agent can reason about image content.
+        // agentId and sessionKey have already been validated above.
         if (!supportsImages && parsed.offloadedRefs.length > 0) {
-          // Validate agentId before making paid image-description calls.
-          // Resolve agentDir from sessionKey first, then fall back to agentId.
-          let resolvedAgentDir: string | undefined;
-          if (requestedSessionKeyRaw) {
-            const sid = resolveSessionAgentId({ sessionKey: requestedSessionKeyRaw, config: cfg });
-            resolvedAgentDir = sid ? resolveAgentDir(cfg, sid) : undefined;
-          } else if (request.agentId) {
-            const aid = normalizeAgentId(String(request.agentId));
-            const knownAgents = listAgentIds(cfg);
-            if (!knownAgents.includes(aid)) {
-              respond(
-                false,
-                undefined,
-                errorShape(
-                  ErrorCodes.INVALID_REQUEST,
-                  `invalid agent params: unknown agent id "${request.agentId}"`,
-                ),
-              );
-              return;
-            }
-            resolvedAgentDir = resolveAgentDir(cfg, aid);
-          }
+          const resolvedAgentDir = validatedSessionKeyRaw
+            ? (() => {
+              const sid = resolveSessionAgentId({ sessionKey: validatedSessionKeyRaw, config: cfg });
+              return sid ? resolveAgentDir(cfg, sid) : undefined;
+            })()
+            : validatedAgentId
+              ? resolveAgentDir(cfg, validatedAgentId)
+              : undefined;
           const described = await describeOffloadedImagesForTextOnlyModel({
             parsed,
             cfg,
@@ -503,58 +537,15 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
 
-    const agentIdRaw = normalizeOptionalString(request.agentId) ?? "";
-    const agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
-    if (agentId) {
-      const knownAgents = listAgentIds(cfg);
-      if (!knownAgents.includes(agentId)) {
-        respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.INVALID_REQUEST,
-            `invalid agent params: unknown agent id "${request.agentId}"`,
-          ),
-        );
-        return;
-      }
-    }
+    const agentId = validatedAgentId;
 
-    const requestedSessionKeyRaw = normalizeOptionalString(request.sessionKey);
-    if (
-      requestedSessionKeyRaw &&
-      classifySessionKeyShape(requestedSessionKeyRaw) === "malformed_agent"
-    ) {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.INVALID_REQUEST,
-          `invalid agent params: malformed session key "${requestedSessionKeyRaw}"`,
-        ),
-      );
-      return;
-    }
+    const requestedSessionKeyRaw = validatedSessionKeyRaw;
     let requestedSessionKey =
       requestedSessionKeyRaw ??
       resolveExplicitAgentSessionKey({
         cfg,
         agentId,
       });
-    if (agentId && requestedSessionKeyRaw) {
-      const sessionAgentId = resolveAgentIdFromSessionKey(requestedSessionKeyRaw);
-      if (sessionAgentId !== agentId) {
-        respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.INVALID_REQUEST,
-            `invalid agent params: agent "${request.agentId}" does not match session key agent "${sessionAgentId}"`,
-          ),
-        );
-        return;
-      }
-    }
     let resolvedSessionId = normalizeOptionalString(request.sessionId);
     let sessionEntry: SessionEntry | undefined;
     let bestEffortDeliver = requestedBestEffortDeliver ?? false;
