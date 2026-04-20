@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { rewriteTranscriptEntriesInSessionFile } from "../../agents/pi-embedded-runner/transcript-rewrite.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
@@ -47,6 +47,7 @@ import {
   type ChatImageContent,
   type OffloadedRef,
   parseMessageWithAttachments,
+  describeOffloadedImagesForTextOnlyModel,
 } from "../chat-attachments.js";
 import { MediaOffloadError } from "../chat-attachments.js";
 import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
@@ -1936,10 +1937,26 @@ export const chatHandlers: GatewayRequestHandlers = {
           log: context.logGateway,
           supportsImages,
         });
-        parsedMessage = parsed.message;
-        parsedImages = parsed.images;
-        imageOrder = parsed.imageOrder;
-        offloadedRefs = parsed.offloadedRefs;
+        // When the primary model is text-only, describe offloaded images using
+        // the configured imageModel so the agent can reason about image content.
+        if (!supportsImages && parsed.offloadedRefs.length > 0) {
+          const agentDir = resolveAgentDir(cfg, agentId);
+          const described = await describeOffloadedImagesForTextOnlyModel({
+            parsed,
+            cfg,
+            agentDir,
+            log: context.logGateway,
+          });
+          parsedMessage = described.message;
+          parsedImages = described.images;
+          imageOrder = described.imageOrder;
+          offloadedRefs = described.offloadedRefs;
+        } else {
+          parsedMessage = parsed.message;
+          parsedImages = parsed.images;
+          imageOrder = parsed.imageOrder;
+          offloadedRefs = parsed.offloadedRefs;
+        }
       } catch (err) {
         respond(
           false,

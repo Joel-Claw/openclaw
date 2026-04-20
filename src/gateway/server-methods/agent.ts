@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { listAgentIds, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { listAgentIds, resolveAgentDir, resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
 import {
   normalizeSpawnedRunMetadata,
@@ -58,7 +58,7 @@ import {
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
-import { MediaOffloadError, parseMessageWithAttachments } from "../chat-attachments.js";
+import { MediaOffloadError, parseMessageWithAttachments, describeOffloadedImagesForTextOnlyModel } from "../chat-attachments.js";
 import { resolveAssistantAvatarUrl } from "../control-ui-shared.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
@@ -425,9 +425,45 @@ export const agentHandlers: GatewayRequestHandlers = {
           log: context.logGateway,
           supportsImages,
         });
-        message = parsed.message.trim();
-        images = parsed.images;
-        imageOrder = parsed.imageOrder;
+        // When the primary model is text-only, describe offloaded images using
+        // the configured imageModel so the agent can reason about image content.
+        if (!supportsImages && parsed.offloadedRefs.length > 0) {
+          // Validate agentId before making paid image-description calls.
+          // Resolve agentDir from sessionKey first, then fall back to agentId.
+          let resolvedAgentDir: string | undefined;
+          if (requestedSessionKeyRaw) {
+            const sid = resolveSessionAgentId({ sessionKey: requestedSessionKeyRaw, config: cfg });
+            resolvedAgentDir = sid ? resolveAgentDir(cfg, sid) : undefined;
+          } else if (request.agentId) {
+            const aid = normalizeAgentId(String(request.agentId));
+            const knownAgents = listAgentIds(cfg);
+            if (!knownAgents.includes(aid)) {
+              respond(
+                false,
+                undefined,
+                errorShape(
+                  ErrorCodes.INVALID_REQUEST,
+                  `invalid agent params: unknown agent id "${request.agentId}"`,
+                ),
+              );
+              return;
+            }
+            resolvedAgentDir = resolveAgentDir(cfg, aid);
+          }
+          const described = await describeOffloadedImagesForTextOnlyModel({
+            parsed,
+            cfg,
+            agentDir: resolvedAgentDir,
+            log: context.logGateway,
+          });
+          message = described.message.trim();
+          images = described.images;
+          imageOrder = described.imageOrder;
+        } else {
+          message = parsed.message.trim();
+          images = parsed.images;
+          imageOrder = parsed.imageOrder;
+        }
         // offloadedRefs are appended as text markers to `message`; the agent
         // runner will resolve them via detectAndLoadPromptImages.
       } catch (err) {
