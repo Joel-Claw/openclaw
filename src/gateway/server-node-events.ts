@@ -24,9 +24,11 @@ import {
   normalizeMainKey,
   normalizeRpcAttachmentsToChatAttachments,
   parseMessageWithAttachments,
+  describeOffloadedImagesForTextOnlyModel,
   registerApnsRegistration,
   requestHeartbeatNow,
   resolveGatewayModelSupportsImages,
+  resolveAgentDir,
   resolveOutboundTarget,
   resolveSessionAgentId,
   resolveSessionModelRef,
@@ -438,9 +440,24 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
             log: ctx.logGateway,
             supportsImages,
           });
-          message = parsed.message.trim();
-          images = parsed.images;
-          imageOrder = parsed.imageOrder;
+          // When the primary model is text-only, describe offloaded images using
+          // the configured imageModel so the agent can reason about image content.
+          if (!supportsImages && parsed.offloadedRefs.length > 0) {
+            const agentDir = resolveAgentDir(cfg, sessionAgentId);
+            const described = await describeOffloadedImagesForTextOnlyModel({
+              parsed,
+              cfg,
+              agentDir,
+              log: ctx.logGateway,
+            });
+            message = described.message.trim();
+            images = described.images;
+            imageOrder = described.imageOrder;
+          } else {
+            message = parsed.message.trim();
+            images = parsed.images;
+            imageOrder = parsed.imageOrder;
+          }
           if (message.length > 20_000) {
             ctx.logGateway.warn(
               `agent.request message exceeds limit after attachment parsing (length=${message.length})`,
