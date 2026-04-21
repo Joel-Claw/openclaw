@@ -559,7 +559,13 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
     describeImageFileWithModel = runtime.describeImageFileWithModel;
   } catch {
     log?.warn("describeOffloadedImages: failed to import media-understanding modules");
-    return parsed;
+    // Neutralize markers so the runner doesn't try to parse them as image refs
+    let neutralMessage = parsed.message;
+    for (const ref of parsed.offloadedRefs) {
+      const marker = `[media attached: ${ref.mediaRef}]`;
+      neutralMessage = neutralMessage.replace(marker, "[image attached but could not be described: media-understanding import failed]");
+    }
+    return { ...parsed, message: neutralMessage };
   }
 
   // Resolve the imageModel from config (e.g. agents.defaults.imageModel)
