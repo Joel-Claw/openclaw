@@ -566,9 +566,16 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
   const imageModel = await resolveAutoImageModel!({ cfg, agentDir });
   if (!imageModel?.model) {
     log?.warn(
-      `describeOffloadedImages: no imageModel configured, ${parsed.offloadedRefs.length} image(s) will remain as media:// markers`,
+      `describeOffloadedImages: no imageModel configured, ${parsed.offloadedRefs.length} image(s) cannot be described`,
     );
-    return parsed;
+    // Neutralize all media:// markers so the downstream runner doesn't try
+    // to parse them as image refs (which would fail for text-only models).
+    let neutralMessage = parsed.message;
+    for (const ref of parsed.offloadedRefs) {
+      const marker = `[media attached: ${ref.mediaRef}]`;
+      neutralMessage = neutralMessage.replace(marker, "[image attached but could not be described: no imageModel configured]");
+    }
+    return { ...parsed, message: neutralMessage };
   }
 
   let updatedMessage = parsed.message;
@@ -581,8 +588,13 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
   const skippedCount = parsed.offloadedRefs.length - refsToDescribe.length;
   if (skippedCount > 0) {
     log?.warn(
-      `describeOffloadedImages: capping at ${MAX_DESCRIBE_FANOUT} of ${parsed.offloadedRefs.length} offloaded images; ${skippedCount} will remain as media:// markers`,
+      `describeOffloadedImages: capping at ${MAX_DESCRIBE_FANOUT} of ${parsed.offloadedRefs.length} offloaded images; ${skippedCount} will be neutralized`,
     );
+    // Neutralize skipped markers so the runner doesn't try to parse them
+    for (const ref of parsed.offloadedRefs.slice(MAX_DESCRIBE_FANOUT)) {
+      const marker = `[media attached: ${ref.mediaRef}]`;
+      updatedMessage = updatedMessage.replace(marker, "[image attached but not described: fanout cap reached]");
+    }
   }
 
   for (const ref of refsToDescribe) {
@@ -615,12 +627,17 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
         );
       } else {
         log?.warn(`describeOffloadedImages: imageModel returned empty description for ${ref.mediaRef}`);
+        // Neutralize marker so it doesn't get parsed as image ref
+        const marker = `[media attached: ${ref.mediaRef}]`;
+        updatedMessage = updatedMessage.replace(marker, "[image attached but description was empty]");
       }
     } catch (err) {
       log?.warn(
         `describeOffloadedImages: failed to describe ${ref.mediaRef}: ${formatErrorMessage(err)}`,
       );
-      // Leave the original media:// marker — graceful fallback
+      // Neutralize the marker so it doesn't get parsed as an image ref downstream
+      const marker = `[media attached: ${ref.mediaRef}]`;
+      updatedMessage = updatedMessage.replace(marker, `[image attached but could not be described: description failed]`);
     }
   }
 
