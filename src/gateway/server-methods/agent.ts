@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { listAgentIds, resolveAgentDir, resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { listAgentIds, resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
 import {
   normalizeSpawnedRunMetadata,
@@ -483,7 +483,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             })()
             : validatedAgentId
               ? resolveAgentDir(cfg, validatedAgentId)
-              : undefined;
+              : resolveAgentDir(cfg, resolveDefaultAgentId(cfg));
           const described = await describeOffloadedImagesForTextOnlyModel({
             parsed,
             cfg,
