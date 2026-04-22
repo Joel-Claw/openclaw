@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { listAgentIds, resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId, resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  listAgentIds,
+  resolveAgentDir,
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
 import {
   normalizeSpawnedRunMetadata,
@@ -58,7 +64,11 @@ import {
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
-import { MediaOffloadError, parseMessageWithAttachments, describeOffloadedImagesForTextOnlyModel } from "../chat-attachments.js";
+import {
+  MediaOffloadError,
+  parseMessageWithAttachments,
+  describeOffloadedImagesForTextOnlyModel,
+} from "../chat-attachments.js";
 import { resolveAssistantAvatarUrl } from "../control-ui-shared.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
@@ -397,7 +407,9 @@ export const agentHandlers: GatewayRequestHandlers = {
     // Validate agentId and sessionKey early so that paid image-description
     // model calls are never triggered for invalid request params.
     const validatedAgentIdRaw = normalizeOptionalString(request.agentId) ?? "";
-    const validatedAgentId = validatedAgentIdRaw ? normalizeAgentId(validatedAgentIdRaw) : undefined;
+    const validatedAgentId = validatedAgentIdRaw
+      ? normalizeAgentId(validatedAgentIdRaw)
+      : undefined;
     if (validatedAgentId) {
       const knownAgents = listAgentIds(cfg);
       if (!knownAgents.includes(validatedAgentId)) {
@@ -445,11 +457,33 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
 
+    // Validate channel hints before any attachment processing or paid
+    // image-description calls, so that requests with invalid channels are
+    // rejected early without triggering unnecessary API costs or disk I/O.
+    const isKnownGatewayChannel = (value: string): boolean => isGatewayMessageChannel(value);
+    const channelHints = [request.channel, request.replyChannel]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    for (const rawChannel of channelHints) {
+      const normalized = normalizeMessageChannel(rawChannel);
+      if (normalized && normalized !== "last" && !isKnownGatewayChannel(normalized)) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent params: unknown channel: ${normalized}`,
+          ),
+        );
+        return;
+      }
+    }
+
     let message = (request.message ?? "").trim();
     let images: Array<{ type: "image"; data: string; mimeType: string }> = [];
     let imageOrder: PromptImageOrderEntry[] = [];
     if (normalizedAttachments.length > 0) {
-
       let baseProvider: string | undefined;
       let baseModel: string | undefined;
       if (validatedSessionKeyRaw) {
@@ -478,9 +512,12 @@ export const agentHandlers: GatewayRequestHandlers = {
         if (!supportsImages && parsed.offloadedRefs.length > 0) {
           const resolvedAgentDir = validatedSessionKeyRaw
             ? (() => {
-              const sid = resolveSessionAgentId({ sessionKey: validatedSessionKeyRaw, config: cfg });
-              return sid ? resolveAgentDir(cfg, sid) : undefined;
-            })()
+                const sid = resolveSessionAgentId({
+                  sessionKey: validatedSessionKeyRaw,
+                  config: cfg,
+                });
+                return sid ? resolveAgentDir(cfg, sid) : undefined;
+              })()
             : validatedAgentId
               ? resolveAgentDir(cfg, validatedAgentId)
               : resolveAgentDir(cfg, resolveDefaultAgentId(cfg));
@@ -511,26 +548,6 @@ export const agentHandlers: GatewayRequestHandlers = {
           errorShape(
             isServerFault ? ErrorCodes.UNAVAILABLE : ErrorCodes.INVALID_REQUEST,
             String(err),
-          ),
-        );
-        return;
-      }
-    }
-
-    const isKnownGatewayChannel = (value: string): boolean => isGatewayMessageChannel(value);
-    const channelHints = [request.channel, request.replyChannel]
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    for (const rawChannel of channelHints) {
-      const normalized = normalizeMessageChannel(rawChannel);
-      if (normalized && normalized !== "last" && !isKnownGatewayChannel(normalized)) {
-        respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.INVALID_REQUEST,
-            `invalid agent params: unknown channel: ${normalized}`,
           ),
         );
         return;
