@@ -601,23 +601,35 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
   // resolveAutoImageModel checks activeModel then falls back to key-order,
   // but it does NOT check agents.defaults.imageModel (that logic lives in
   // resolveAutoEntries which is used by the `image` tool path, not here).
-  // So we resolve the configured imageModel first and pass it as activeModel
-  // so multi-provider setups route descriptions to the correct provider.
-  let activeModelFromConfig: { provider: string; model: string } | undefined;
-  if (typeof cfg.agents?.defaults?.imageModel === "string" && cfg.agents.defaults.imageModel.includes("/")) {
-    const slashIdx = cfg.agents.defaults.imageModel.indexOf("/");
-    activeModelFromConfig = {
-      provider: cfg.agents.defaults.imageModel.slice(0, slashIdx),
-      model: cfg.agents.defaults.imageModel.slice(slashIdx + 1),
-    };
-  } else if (cfg.agents?.defaults?.imageModel && typeof cfg.agents.defaults.imageModel === "object") {
-    const primary = cfg.agents.defaults.imageModel.primary;
+  // So we build a list of configured image model candidates (primary + fallbacks)
+  // and try each as activeModel so multi-provider setups route descriptions
+  // to the correct provider and honor the fallback chain.
+  const configuredImageModelCandidates: { provider: string; model: string }[] = [];
+  const imageModelCfg = cfg.agents?.defaults?.imageModel;
+  if (typeof imageModelCfg === "string" && imageModelCfg.includes("/")) {
+    const slashIdx = imageModelCfg.indexOf("/");
+    configuredImageModelCandidates.push({
+      provider: imageModelCfg.slice(0, slashIdx),
+      model: imageModelCfg.slice(slashIdx + 1),
+    });
+  } else if (imageModelCfg && typeof imageModelCfg === "object") {
+    const primary = imageModelCfg.primary;
     if (primary && primary.includes("/")) {
       const slashIdx = primary.indexOf("/");
-      activeModelFromConfig = {
+      configuredImageModelCandidates.push({
         provider: primary.slice(0, slashIdx),
         model: primary.slice(slashIdx + 1),
-      };
+      });
+    }
+    const fallbacks = imageModelCfg.fallbacks ?? [];
+    for (const fb of fallbacks) {
+      if (fb && fb.includes("/")) {
+        const slashIdx = fb.indexOf("/");
+        configuredImageModelCandidates.push({
+          provider: fb.slice(0, slashIdx),
+          model: fb.slice(slashIdx + 1),
+        });
+      }
     }
   }
 
@@ -625,7 +637,23 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
   // so that a config error doesn't crash the entire message pipeline.
   let imageModel: Awaited<ReturnType<typeof resolveAutoImageModel>> | undefined;
   try {
-    imageModel = await resolveAutoImageModel({ cfg, agentDir, activeModel: activeModelFromConfig });
+    // Try each configured candidate as activeModel; use the first that resolves.
+    // If none resolve (e.g. no auth), fall through to key-order auto selection
+    // which resolveAutoImageModel does internally when activeModel is unset.
+    if (configuredImageModelCandidates.length > 0) {
+      for (const candidate of configuredImageModelCandidates) {
+        const resolved = await resolveAutoImageModel({ cfg, agentDir, activeModel: candidate });
+        if (resolved?.model) {
+          imageModel = resolved;
+          break;
+        }
+      }
+    }
+    // If no configured candidate resolved, let resolveAutoImageModel try
+    // key-order auto selection by calling it without activeModel.
+    if (!imageModel?.model) {
+      imageModel = await resolveAutoImageModel({ cfg, agentDir });
+    }
   } catch (err) {
     log?.warn(
       `describeOffloadedImages: resolveAutoImageModel failed: ${err instanceof Error ? err.message : String(err)}`,
