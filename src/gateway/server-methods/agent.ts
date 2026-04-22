@@ -63,6 +63,7 @@ import {
   isGatewayMessageChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
+import { deleteMediaBuffer } from "../../media/store.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
 import {
   MediaOffloadError,
@@ -527,6 +528,18 @@ export const agentHandlers: GatewayRequestHandlers = {
             agentDir: resolvedAgentDir,
             log: context.logGateway,
           });
+
+          // Text-only description is complete — the physical media files are no
+          // longer needed because the image content has been converted to text
+          // descriptions in the message. Clean up now to avoid orphaned files
+          // accumulating on disk (especially when media.cleanupTtlHours is unset).
+          // Best-effort: don't let cleanup failures block the message.
+          await Promise.allSettled(
+            parsed.offloadedRefs.map((ref) =>
+              deleteMediaBuffer(ref.id, "inbound").catch(() => {}),
+            ),
+          );
+
           message = described.message.trim();
           images = described.images;
           imageOrder = described.imageOrder;
