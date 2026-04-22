@@ -311,6 +311,15 @@ export async function parseMessageWithAttachments(
   // entirely, which meant the agent never saw them at all.
   const textOnlyMode = opts?.supportsImages === false;
 
+  // In text-only mode, cap the number of attachments that get offloaded to
+  // disk. Without this cap, a single request with many attachments causes
+  // unbounded media-store writes and I/O amplification before the downstream
+  // fanout limit (MAX_DESCRIBE_FANOUT in describeOffloadedImagesForTextOnlyModel)
+  // kicks in. Attachments beyond this budget are neutralized as text-only
+  // markers without persisting to disk.
+  const MAX_TEXT_ONLY_OFFLOAD = 10;
+  let textOnlyOffloadCount = 0;
+
   const images: ChatImageContent[] = [];
   const imageOrder: PromptImageOrderEntry[] = [];
   const offloadedRefs: OffloadedRef[] = [];
@@ -375,6 +384,18 @@ export async function parseMessageWithAttachments(
       // images using a configured imageModel. Inline image blocks are never
       // produced because the primary model cannot process them.
       const forceOffload = textOnlyMode;
+
+      // In text-only mode, cap offloads before writing to disk. Excess
+      // attachments are neutralized as text markers without persisting
+      // to the media store, preventing unbounded I/O from large batches.
+      if (forceOffload && textOnlyOffloadCount >= MAX_TEXT_ONLY_OFFLOAD) {
+        log?.warn(
+          `attachment ${label}: text-only offload cap (${MAX_TEXT_ONLY_OFFLOAD}) reached, neutralizing without disk write`,
+        );
+        updatedMessage += `\n[image attached but not offloaded: text-only attachment cap reached]`;
+        imageOrder.push("offloaded");
+        continue;
+      }
 
       let isOffloaded = false;
 
@@ -443,6 +464,7 @@ export async function parseMessageWithAttachments(
           imageOrder.push("offloaded");
 
           isOffloaded = true;
+          textOnlyOffloadCount++;
         } catch (err) {
           const errorMessage = formatErrorMessage(err);
           throw new MediaOffloadError(
@@ -551,8 +573,12 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
 
   // Dynamically import the media-understanding description functions
   // through the *.runtime.ts boundary convention (see CLAUDE.md).
-  let resolveAutoImageModel: typeof import("./media-understanding-describe.runtime.js").resolveAutoImageModel | undefined;
-  let describeImageFileWithModel: typeof import("./media-understanding-describe.runtime.js").describeImageFileWithModel | undefined;
+  let resolveAutoImageModel:
+    | typeof import("./media-understanding-describe.runtime.js").resolveAutoImageModel
+    | undefined;
+  let describeImageFileWithModel:
+    | typeof import("./media-understanding-describe.runtime.js").describeImageFileWithModel
+    | undefined;
   try {
     const runtime = await import("./media-understanding-describe.runtime.js");
     resolveAutoImageModel = runtime.resolveAutoImageModel;
@@ -563,7 +589,10 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
     let neutralMessage = parsed.message;
     for (const ref of parsed.offloadedRefs) {
       const marker = `[media attached: ${ref.mediaRef}]`;
-      neutralMessage = neutralMessage.replace(marker, "[image attached but could not be described: media-understanding import failed]");
+      neutralMessage = neutralMessage.replace(
+        marker,
+        "[image attached but could not be described: media-understanding import failed]",
+      );
     }
     return { ...parsed, message: neutralMessage };
   }
@@ -573,14 +602,19 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
   // so that a config error doesn't crash the entire message pipeline.
   let imageModel: Awaited<ReturnType<typeof resolveAutoImageModel>> | undefined;
   try {
-    imageModel = await resolveAutoImageModel!({ cfg, agentDir });
+    imageModel = await resolveAutoImageModel({ cfg, agentDir });
   } catch (err) {
-    log?.warn(`describeOffloadedImages: resolveAutoImageModel failed: ${err instanceof Error ? err.message : String(err)}`);
+    log?.warn(
+      `describeOffloadedImages: resolveAutoImageModel failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     // Neutralize all media:// markers so the runner doesn't try to parse them
     let neutralMessage = parsed.message;
     for (const ref of parsed.offloadedRefs) {
       const marker = `[media attached: ${ref.mediaRef}]`;
-      neutralMessage = neutralMessage.replace(marker, "[image attached but could not be described: imageModel resolution failed]");
+      neutralMessage = neutralMessage.replace(
+        marker,
+        "[image attached but could not be described: imageModel resolution failed]",
+      );
     }
     return { ...parsed, message: neutralMessage };
   }
@@ -593,7 +627,10 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
     let neutralMessage = parsed.message;
     for (const ref of parsed.offloadedRefs) {
       const marker = `[media attached: ${ref.mediaRef}]`;
-      neutralMessage = neutralMessage.replace(marker, "[image attached but could not be described: no imageModel configured]");
+      neutralMessage = neutralMessage.replace(
+        marker,
+        "[image attached but could not be described: no imageModel configured]",
+      );
     }
     return { ...parsed, message: neutralMessage };
   }
@@ -613,7 +650,10 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
     // Neutralize skipped markers so the runner doesn't try to parse them
     for (const ref of parsed.offloadedRefs.slice(MAX_DESCRIBE_FANOUT)) {
       const marker = `[media attached: ${ref.mediaRef}]`;
-      updatedMessage = updatedMessage.replace(marker, "[image attached but not described: fanout cap reached]");
+      updatedMessage = updatedMessage.replace(
+        marker,
+        "[image attached but not described: fanout cap reached]",
+      );
     }
   }
 
@@ -623,7 +663,7 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
       const physicalPath = await resolveMediaBufferPath(ref.id, "inbound");
 
       // Describe the image using the vision-capable imageModel
-      const result = await describeImageFileWithModel!({
+      const result = await describeImageFileWithModel({
         filePath: physicalPath,
         cfg,
         agentDir,
@@ -646,10 +686,15 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
           `[Gateway] Described offloaded image ${ref.mediaRef} via ${imageModel.provider}/${imageModel.model}`,
         );
       } else {
-        log?.warn(`describeOffloadedImages: imageModel returned empty description for ${ref.mediaRef}`);
+        log?.warn(
+          `describeOffloadedImages: imageModel returned empty description for ${ref.mediaRef}`,
+        );
         // Neutralize marker so it doesn't get parsed as image ref
         const marker = `[media attached: ${ref.mediaRef}]`;
-        updatedMessage = updatedMessage.replace(marker, "[image attached but description was empty]");
+        updatedMessage = updatedMessage.replace(
+          marker,
+          "[image attached but description was empty]",
+        );
       }
     } catch (err) {
       log?.warn(
@@ -657,7 +702,10 @@ export async function describeOffloadedImagesForTextOnlyModel(params: {
       );
       // Neutralize the marker so it doesn't get parsed as an image ref downstream
       const marker = `[media attached: ${ref.mediaRef}]`;
-      updatedMessage = updatedMessage.replace(marker, `[image attached but could not be described: description failed]`);
+      updatedMessage = updatedMessage.replace(
+        marker,
+        `[image attached but could not be described: description failed]`,
+      );
     }
   }
 
