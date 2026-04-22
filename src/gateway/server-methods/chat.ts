@@ -1963,7 +1963,9 @@ export const chatHandlers: GatewayRequestHandlers = {
           parsedMessage = described.message;
           parsedImages = described.images;
           imageOrder = described.imageOrder;
-          offloadedRefs = described.offloadedRefs;
+          // Clear offloadedRefs so persistChatSendImages doesn't build transcript
+          // entries pointing to files that were already deleted during cleanup.
+          offloadedRefs = [];
         } else {
           parsedMessage = parsed.message;
           parsedImages = parsed.images;
